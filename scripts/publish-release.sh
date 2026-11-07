@@ -34,19 +34,34 @@ if gh release view "$VERSION" --repo "$REPO" >/dev/null 2>&1; then
   fi
 fi
 
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+WORKDIR="${PUBLISH_WORKDIR:-$(mktemp -d)}"
+if [ -z "${PUBLISH_WORKDIR:-}" ]; then
+  trap 'rm -rf "$WORKDIR"' EXIT
+fi
+mkdir -p "$WORKDIR"
 cd "$WORKDIR"
+
+# Downloader: prefer aria2c (multi-connection) when available, fall back to curl.
+download() {
+  local url="$1" out="$2"
+  if command -v aria2c >/dev/null 2>&1; then
+    aria2c -x 16 -s 16 -k 1M --continue=true --file-allocation=none \
+      --max-tries=5 --retry-wait=5 --timeout=60 \
+      --dir . --out "$out" "$url"
+  else
+    curl --fail --location --retry 3 --retry-all-errors -C - --max-time 3600 \
+      -o "$out" "$url"
+  fi
+}
 
 for asset in "${ASSETS[@]}"; do
   echo "downloading $asset"
-  expected=$(curl --fail --location --retry 3 --retry-all-errors --max-time 120 \
-    "${UPSTREAM}/${asset}.sha256sum" | awk '{print $1}')
+  expected=$(download "${UPSTREAM}/${asset}.sha256sum" "${asset}.sha256sum" \
+    >/dev/null && awk '{print $1}' "${asset}.sha256sum")
   ok=0
   attempt=1
   while [ "$attempt" -le 6 ]; do
-    if curl --fail --location --retry 3 --retry-all-errors -C - --max-time 3600 \
-        -o "$asset" "${UPSTREAM}/${asset}"; then
+    if download "${UPSTREAM}/${asset}" "$asset"; then
       actual=$(shasum -a 256 "$asset" | awk '{print $1}')
       if [ "$actual" = "$expected" ]; then ok=1; break; fi
       echo "hash mismatch for $asset; restarting download"
