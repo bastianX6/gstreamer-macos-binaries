@@ -40,7 +40,23 @@ cd "$WORKDIR"
 
 for asset in "${ASSETS[@]}"; do
   echo "downloading $asset"
-  curl --fail --location --retry 3 --max-time 3600 -o "$asset" "${UPSTREAM}/${asset}"
+  expected=$(curl --fail --location --retry 3 --retry-all-errors --max-time 120 \
+    "${UPSTREAM}/${asset}.sha256sum" | awk '{print $1}')
+  ok=0
+  attempt=1
+  while [ "$attempt" -le 6 ]; do
+    if curl --fail --location --retry 3 --retry-all-errors -C - --max-time 3600 \
+        -o "$asset" "${UPSTREAM}/${asset}"; then
+      actual=$(shasum -a 256 "$asset" | awk '{print $1}')
+      if [ "$actual" = "$expected" ]; then ok=1; break; fi
+      echo "hash mismatch for $asset; restarting download"
+      rm -f "$asset"
+    fi
+    attempt=$((attempt + 1))
+    echo "retrying $asset (attempt $attempt)"
+    sleep 5
+  done
+  [ "$ok" -eq 1 ] || { echo "error: download of $asset failed after 6 attempts" >&2; exit 1; }
   shasum -a 256 "$asset" > "${asset}.sha256"
 done
 
